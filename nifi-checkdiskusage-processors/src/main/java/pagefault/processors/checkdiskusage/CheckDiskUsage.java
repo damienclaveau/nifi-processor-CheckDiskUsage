@@ -24,25 +24,32 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.TimeUnit;
+import java.util.Collections;
+import java.util.Set;
+import java.util.HashSet;
 
-import org.apache.nifi.components.PropertyDescriptor;
-import org.apache.nifi.components.PropertyValue;
-import org.apache.nifi.flowfile.FlowFile;
-import org.apache.nifi.processor.*;
 import org.apache.nifi.annotation.behavior.ReadsAttribute;
 import org.apache.nifi.annotation.behavior.ReadsAttributes;
 import org.apache.nifi.annotation.behavior.WritesAttribute;
 import org.apache.nifi.annotation.behavior.WritesAttributes;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
-import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.SeeAlso;
+import org.apache.nifi.util.NiFiProperties;
+import org.apache.nifi.annotation.behavior.InputRequirement;
+import org.apache.nifi.annotation.behavior.InputRequirement.Requirement;
+import org.apache.nifi.annotation.documentation.CapabilityDescription;
 import org.apache.nifi.annotation.documentation.Tags;
+import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.flowfile.FlowFile;
+import org.apache.nifi.processor.AbstractProcessor;
+import org.apache.nifi.processor.ProcessContext;
+import org.apache.nifi.processor.ProcessSession;
+import org.apache.nifi.processor.ProcessorInitializationContext;
+import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
-import org.apache.nifi.util.NiFiProperties;
 
-import java.util.*;
-
+@InputRequirement(Requirement.INPUT_REQUIRED)
 @Tags({"health", "filesystem"})
 @CapabilityDescription("Regularly checks disk utilization to invoke backpressure when filesystem is full")
 @SeeAlso({})
@@ -55,6 +62,7 @@ public class CheckDiskUsage extends AbstractProcessor {
     
     private static boolean flowfile_repository_disk_available = false;
     private static boolean content_repository_disk_available  = false;
+    private NiFiProperties nifiProperties = null;
     
     public static final PropertyDescriptor INTERVAL = new PropertyDescriptor.Builder()
 	.name("Interval")
@@ -93,6 +101,12 @@ public class CheckDiskUsage extends AbstractProcessor {
 
     @Override
     protected void init(final ProcessorInitializationContext context) {
+        
+        
+        final String properties_file = System.getProperty(NiFiProperties.PROPERTIES_FILE_PATH);
+        NiFiProperties properties = NiFiProperties.createBasicNiFiProperties(properties_file, null);
+        this.nifiProperties = properties;
+        
         final List<PropertyDescriptor> descriptors = new ArrayList<PropertyDescriptor>();
         descriptors.add(INTERVAL);
         descriptors.add(FLOWFILE_REPOSITORY_FREE);
@@ -101,7 +115,6 @@ public class CheckDiskUsage extends AbstractProcessor {
 
         final Set<Relationship> relationships = new HashSet<Relationship>();
         relationships.add(REL_SUCCESS);
-	relationships.add(REL_DISKUSAGE_FAILURE);
         this.relationships = Collections.unmodifiableSet(relationships);
     }
 
@@ -143,9 +156,8 @@ public class CheckDiskUsage extends AbstractProcessor {
 
 	if ((epoch - last_update) >= interval) {
 
-            NiFiProperties properties = NiFiProperties.getInstance();
-            Path flowFileRepositoryPath = properties.getFlowFileRepositoryPath();
-            Map<String, Path> contentRepositoryPaths = properties.getContentRepositoryPaths();
+            final Path flowFileRepositoryPath = nifiProperties.getFlowFileRepositoryPath();
+            Map<String, Path> contentRepositoryPaths = nifiProperties.getContentRepositoryPaths();
 
             File flowFileRepositoryFile = flowFileRepositoryPath.toFile();
 
@@ -186,17 +198,13 @@ public class CheckDiskUsage extends AbstractProcessor {
 	    String flowFileRepoPercentageVal = flowFileRepoMatcher.group(1);
 	    int flowFileRepoFreeThreshold = Integer.parseInt(flowFileRepoPercentageVal);
 
-            if (flowFileRepositoryFreePercent > flowFileRepoFreeThreshold) {
-		flowfile_repository_disk_available = true;
-            } else {
-		flowfile_repository_disk_available = false;
-            }
+            flowfile_repository_disk_available = flowFileRepositoryFreePercent > flowFileRepoFreeThreshold;
         }
 
 	if (flowfile_repository_disk_available == true && content_repository_disk_available == true) {
 		session.transfer(flowFile, REL_SUCCESS);
 	} else {
-		session.transfer(flowFile, REL_DISKUSAGE_FAILURE);
+                session.rollback(false);
                 CheckDiskUsage.sleepQuietly(1000L);
 	}
     }
